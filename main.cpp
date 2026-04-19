@@ -6,7 +6,7 @@
 /*   By: adnen <adnen@student.42.fr>                +#+  +:+       +#+        */
 /*                                                +#+#+#+#+#+   +#+           */
 /*   Created: 2026/04/19 18:18:53 by adnen             #+#    #+#             */
-/*   Updated: 2026/04/19 21:00:13 by adnen            ###   ########.fr       */
+/*   Updated: 2026/04/19 21:11:30 by adnen            ###   ########.fr       */
 /*                                                                            */
 /* ************************************************************************** */
 
@@ -154,6 +154,53 @@ int setupInotify(const std::vector<std::filesystem::path> &paths)
 		i = i + 1;
 	}
 	return fd;
+}
+
+void monitorLoop(int inotifyFd)
+{
+    char buffer[4096];
+    int len;
+    
+    // Boucle infinie englober TOUT
+    while (true)
+    {
+        len = read(inotifyFd, buffer, sizeof(buffer));
+        
+        if (len < 0)
+        {
+            writeLog("ERROR: read() failed");
+            continue;
+        }
+
+        int i = 0;
+        // Boucle lecture événements DOIT être dedans
+        while (i < len)
+        {
+            struct inotify_event *event = (struct inotify_event *)&buffer[i];
+
+            // event->len dire si fichier a un nom. event->name avoir le nom.
+            if (event->len > 0)
+            {
+                std::string filename = event->name;
+
+                // Utiliser & (ET bit à bit) pour vérifier masque
+                if (event->mask & IN_ACCESS)
+                {
+                    writeLog("ACCESS detected: " + filename);
+                    // Toi faire checkReadAbuse() plus tard
+                }
+
+                if (event->mask & IN_MODIFY)
+                {
+                    writeLog("MODIFY detected: " + filename);
+                    // Toi faire checkEntropy() plus tard
+                }
+            }
+
+            // Avancer au prochain événement
+            i = i + sizeof(struct inotify_event) + event->len;
+        }
+    }
 }
 
 int main(int argc, char **argv)
