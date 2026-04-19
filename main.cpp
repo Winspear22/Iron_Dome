@@ -6,11 +6,12 @@
 /*   By: adnen <adnen@student.42.fr>                +#+  +:+       +#+        */
 /*                                                +#+#+#+#+#+   +#+           */
 /*   Created: 2026/04/19 18:18:53 by adnen             #+#    #+#             */
-/*   Updated: 2026/04/19 20:52:44 by adnen            ###   ########.fr       */
+/*   Updated: 2026/04/19 21:00:13 by adnen            ###   ########.fr       */
 /*                                                                            */
 /* ************************************************************************** */
 
 #include "includes.hpp"
+#include <sys/inotify.h>
 
 void checkForRootPermission()
 {
@@ -132,6 +133,28 @@ void writeLog(const std::string &message)
     stream << " | " << message << "\n";
 	stream.close();
 }                                                                                                                                                                                                       
+
+int setupInotify(const std::vector<std::filesystem::path> &paths)
+{
+	int fd;
+	size_t i;
+
+	fd = inotify_init();
+	if (fd < 0)
+	{
+		writeLog("ERROR: inotify_init() failed");
+		exit(EXIT_FAILURE);
+	}
+	i = 0;
+	while (i < paths.size())
+	{
+		int wd = inotify_add_watch(fd, paths[i].c_str(), IN_ACCESS | IN_OPEN | IN_MODIFY | IN_CREATE | IN_DELETE);
+		if (wd < 0)
+			writeLog("WARNING: cannot watch " + paths[i].string());
+		i = i + 1;
+	}
+	return fd;
+}
 
 int main(int argc, char **argv)
 {
