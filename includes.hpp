@@ -6,7 +6,7 @@
 /*   By: adnen <adnen@student.42.fr>                +#+  +:+       +#+        */
 /*                                                +#+#+#+#+#+   +#+           */
 /*   Created: 2026/04/19 18:19:11 by adnen             #+#    #+#             */
-/*   Updated: 2026/04/19 20:13:52 by adnen            ###   ########.fr       */
+/*   Updated: 2026/04/19 20:25:21 by adnen            ###   ########.fr       */
 /*                                                                            */
 /* ************************************************************************** */
 
@@ -20,6 +20,7 @@
 #include <fcntl.h>
 #include <filesystem>
 #include <fstream>
+#include <vector>
 
 # define EXIT_SUCCESS 0
 # define EXIT_FAILURE 1

@@ -6,7 +6,7 @@
 /*   By: adnen <adnen@student.42.fr>                +#+  +:+       +#+        */
 /*                                                +#+#+#+#+#+   +#+           */
 /*   Created: 2026/04/19 18:18:53 by adnen             #+#    #+#             */
-/*   Updated: 2026/04/19 20:22:59 by adnen            ###   ########.fr       */
+/*   Updated: 2026/04/19 20:42:08 by adnen            ###   ########.fr       */
 /*                                                                            */
 /* ************************************************************************** */
 
@@ -77,10 +77,7 @@ void setupLog()
 	std::string logDir = "/var/log/irondome/";
 	std::string logFile = "/var/log/irondome/irondome.log";
 	if (std::filesystem::exists(logDir) == FAILURE)
-	{
-		//std::cout << GREEN_BOLD << "Creating log directory..." << RESET_BOLD << std::endl;
 		std::filesystem::create_directories(logDir);
-	}
 	std::ofstream stream(logFile, std::ios::app);
 	if (stream.is_open() == FAILURE)
 	{
@@ -90,10 +87,40 @@ void setupLog()
 	stream.close();                                                                                                                                                                                                                                                          
 }
 
+std::vector<std::filesystem::path> parsePaths(int argc, char **argv)
+{
+	std::vector<std::filesystem::path>			paths;
+	size_t										i;
+	if (argc == 1)
+	{
+		paths.push_back("/home");
+		paths.push_back("/etc");
+		paths.push_back("/tmp");
+		return paths;
+	}
+	i = 1;
+	while (i < argc)
+	{
+		std::filesystem::path p(argv[i]);
+		if (std::filesystem::exists(p) == SUCCESS)
+			paths.push_back(p);
+		else
+			std::cerr << RED_BOLD << "Error, path " << p << " does not exist. Path skipped." << RESET_BOLD << std::endl;
+		i = i + 1;
+	}
+	if (paths.empty() == SUCCESS)
+	{
+		std::cerr << RED_BOLD << "Error, no valid paths provided." << RESET_BOLD << std::endl;
+		exit(EXIT_FAILURE);
+	}
+	return paths;
+}
+
 int main(int argc, char **argv)
 {
 	checkForRootPermission();
 	daemonize();
 	setupLog();
+	std::vector<std::filesystem::path> paths = parsePaths(argc, argv);
     return EXIT_SUCCESS;
 }
