@@ -11,61 +11,96 @@
 /* ************************************************************************** */
 
 #include "includes.hpp"
-#include <sys/inotify.h>
+
+#define READ_THRESHOLD          50
+#define READ_WINDOW_SECONDS     10
+#define ENTROPY_DELTA           1.5
+#define ENTROPY_ABSOLUTE        7.2
+#define ENTROPY_DROP_THRESHOLD  200
+#define CRYPTO_CHECK_INTERVAL   5
+#define ENTROPY_POOL_FILE       "/proc/sys/kernel/random/entropy_avail"
+
+static std::map<std::string, std::pair<int, std::chrono::steady_clock::time_point>> readCounters;
+static std::map<std::string, double> previousEntropy;
+static int previousEntropyPool = -1;
+
+// ── Logging ──────────────────────────────────────────────────────────────────
+
+void writeLog(const std::string &message)
+{
+	std::ofstream stream("/var/log/irondome/irondome.log", std::ios::app);
+	if (!stream.is_open())
+		exit(EXIT_FAILURE);
+	auto now = std::chrono::system_clock::now();
+	std::time_t t = std::chrono::system_clock::to_time_t(now);
+	std::string ts = std::ctime(&t);
+	ts.pop_back();
+	stream << ts << " | " << message << "\n";
+	stream.close();
+}
+
+// ── Setup ─────────────────────────────────────────────────────────────────────
 
 void checkForRootPermission()
 {
-	uid_t rootStatus;
-    rootStatus = geteuid();
-	if (rootStatus != 0)
+	uid_t uid = geteuid();
+	if (uid != 0)
 	{
-		std::cerr << RED_BOLD << "Error, the processus was not ran as root." << RESET_BOLD << std::endl;
-		exit(EXIT_FAILURE) ;
+		std::cerr << RED_BOLD << "Error: must be run as root." << RESET << std::endl;
+		exit(EXIT_FAILURE);
 	}
+}
+
+void setupLog()
+{
+	std::string logDir  = "/var/log/irondome/";
+	std::string logFile = "/var/log/irondome/irondome.log";
+	if (!std::filesystem::exists(logDir))
+		std::filesystem::create_directories(logDir);
+	std::ofstream stream(logFile, std::ios::app);
+	if (!stream.is_open())
+	{
+		std::cerr << RED_BOLD << "Error: cannot open log file." << RESET << std::endl;
+		exit(EXIT_FAILURE);
+	}
+	stream.close();
 }
 
 void daemonize()
 {
-	pid_t pid;
-	pid_t pid2;
-	int fd;
-
-	pid = fork();
+	pid_t pid = fork();
 	if (pid < 0)
 	{
-		std::cerr << RED_BOLD << "Error, fork() failure." << RESET_BOLD << std::endl;
-		exit(EXIT_FAILURE) ;
+		std::cerr << RED_BOLD << "Error: fork() failure." << RESET << std::endl;
+		exit(EXIT_FAILURE);
 	}
-	else if (pid > 0)
+	if (pid > 0)
 	{
-		std::cout << GREEN_BOLD << "Success ! Daemon launched, PID: " << getpid() << "." << RESET_BOLD << std::endl;
-		exit(EXIT_SUCCESS) ;
+		std::cout << GREEN_BOLD << "Daemon launched, PID: " << pid << RESET << std::endl;
+		exit(EXIT_SUCCESS);
 	}
 	if (setsid() < 0)
 	{
-		std::cerr << RED_BOLD << "Error, setsid() failure." << RESET_BOLD << std::endl;
-		exit(EXIT_FAILURE) ;
+		writeLog("ERROR: setsid() failure");
+		exit(EXIT_FAILURE);
 	}
-	pid2 = fork();
+	pid_t pid2 = fork();
 	if (pid2 < 0)
 	{
-		std::cerr << RED_BOLD << "Error, fork() failure." << RESET_BOLD << std::endl;
-		exit(EXIT_FAILURE) ;
+		writeLog("ERROR: second fork() failure");
+		exit(EXIT_FAILURE);
 	}
-	else if (pid2 > 0)
-	{
-		std::cout << GREEN_BOLD << "Success ! Daemon launched, PID: " << getpid() << "." << RESET_BOLD << std::endl;
-		exit(EXIT_SUCCESS) ;
-	}
+	if (pid2 > 0)
+		exit(EXIT_SUCCESS);
 	umask(0);
 	chdir("/");
 	close(STDIN_FILENO);
 	close(STDOUT_FILENO);
 	close(STDERR_FILENO);
-	fd = open("/dev/null", O_RDWR);
+	int fd = open("/dev/null", O_RDWR);
 	if (fd < 0)
 	{
-		//std::cerr << RED_BOLD << "Error, open() failure." << RESET_BOLD << std::endl;
+		writeLog("ERROR: cannot open /dev/null");
 		exit(EXIT_FAILURE);
 	}
 	dup(fd);
@@ -73,25 +108,9 @@ void daemonize()
 	close(fd);
 }
 
-void setupLog()
-{
-	std::string logDir = "/var/log/irondome/";
-	std::string logFile = "/var/log/irondome/irondome.log";
-	if (std::filesystem::exists(logDir) == FAILURE)
-		std::filesystem::create_directories(logDir);
-	std::ofstream stream(logFile, std::ios::app);
-	if (stream.is_open() == FAILURE)
-	{
-		std::cerr << RED_BOLD << "Error, open() failure." << RESET_BOLD << std::endl;
-		exit(EXIT_FAILURE);
-	}
-	stream.close();                                                                                                                                                                                                                                                          
-}
-
 std::vector<std::filesystem::path> parsePaths(int argc, char **argv)
 {
-	std::vector<std::filesystem::path>			paths;
-	size_t										i;
+	std::vector<std::filesystem::path> paths;
 	if (argc == 1)
 	{
 		paths.push_back("/home");
@@ -99,115 +118,239 @@ std::vector<std::filesystem::path> parsePaths(int argc, char **argv)
 		paths.push_back("/tmp");
 		return paths;
 	}
-	i = 1;
+	int i = 1;
 	while (i < argc)
 	{
 		std::filesystem::path p(argv[i]);
-		if (std::filesystem::exists(p) == SUCCESS)
+		if (std::filesystem::exists(p))
 			paths.push_back(p);
 		else
-			std::cerr << RED_BOLD << "Error, path " << p << " does not exist. Path skipped." << RESET_BOLD << std::endl;
+			writeLog("WARNING: path not found, skipped: " + p.string());
 		i = i + 1;
 	}
-	if (paths.empty() == SUCCESS)
+	if (paths.empty())
 	{
-		std::cerr << RED_BOLD << "Error, no valid paths provided." << RESET_BOLD << std::endl;
+		writeLog("ERROR: no valid paths provided");
 		exit(EXIT_FAILURE);
 	}
 	return paths;
 }
 
-void writeLog(const std::string &message)
-{
-	std::string logFile = "/var/log/irondome/irondome.log";
-	std::ofstream stream(logFile, std::ios::app);
+// ── Detection: disk read abuse ────────────────────────────────────────────────
 
-	if (stream.is_open() == FAILURE)
+void checkReadAbuse(const std::string &filename)
+{
+	auto now = std::chrono::steady_clock::now();
+	if (readCounters.find(filename) == readCounters.end())
 	{
-		std::cerr << RED_BOLD << "Error, open() failure." << RESET_BOLD << std::endl;
-		exit(EXIT_FAILURE);
+		readCounters[filename] = {1, now};
+		return;
 	}
-	auto now = std::chrono::system_clock::now();
-	std::time_t time = std::chrono::system_clock::to_time_t(now);
-	stream << std::ctime(&time);   // timestamp
-    stream << " | " << message << "\n";
-	stream.close();
-}                                                                                                                                                                                                       
+	long elapsed = std::chrono::duration_cast<std::chrono::seconds>(
+		now - readCounters[filename].second).count();
+	if (elapsed > READ_WINDOW_SECONDS)
+	{
+		readCounters[filename] = {1, now};
+		return;
+	}
+	readCounters[filename].first += 1;
+	if (readCounters[filename].first > READ_THRESHOLD)
+	{
+		writeLog("ALERT: read abuse on " + filename
+			+ " | " + std::to_string(readCounters[filename].first)
+			+ " reads in " + std::to_string(READ_WINDOW_SECONDS) + "s");
+		readCounters[filename].first = 0;
+	}
+}
 
-int setupInotify(const std::vector<std::filesystem::path> &paths)
+// ── Detection: entropy changes ────────────────────────────────────────────────
+
+double computeEntropy(const std::filesystem::path &filePath)
 {
-	int fd;
-	size_t i;
+	std::ifstream stream(filePath, std::ios::binary);
+	if (!stream.is_open())
+		return -1;
+	std::array<size_t, 256> freq{};
+	size_t total = 0;
+	char b;
+	while (stream.get(b))
+	{
+		freq[(unsigned char)b] += 1;
+		total += 1;
+	}
+	if (total == 0)
+		return 0;
+	double entropy = 0.0;
+	size_t i = 0;
+	while (i < 256)
+	{
+		if (freq[i] > 0)
+		{
+			double p = (double)freq[i] / (double)total;
+			entropy -= p * std::log2(p);
+		}
+		i += 1;
+	}
+	return entropy;
+}
 
-	fd = inotify_init();
+void checkEntropy(const std::filesystem::path &filePath)
+{
+	double current = computeEntropy(filePath);
+	if (current < 0)
+		return;
+	std::string name = filePath.string();
+	if (previousEntropy.find(name) == previousEntropy.end())
+	{
+		previousEntropy[name] = current;
+		return;
+	}
+	double delta = current - previousEntropy[name];
+	if (delta > ENTROPY_DELTA)
+		writeLog("ALERT: entropy spike on " + name
+			+ " | delta=" + std::to_string(delta)
+			+ " current=" + std::to_string(current) + "/8.0");
+	if (current > ENTROPY_ABSOLUTE)
+		writeLog("ALERT: high entropy file " + name
+			+ " | entropy=" + std::to_string(current) + "/8.0");
+	previousEntropy[name] = current;
+}
+
+// ── Detection: cryptographic activity ────────────────────────────────────────
+
+int readEntropyAvail()
+{
+	std::ifstream stream(ENTROPY_POOL_FILE);
+	if (!stream.is_open())
+	{
+		writeLog("WARNING: cannot read " + std::string(ENTROPY_POOL_FILE));
+		return -1;
+	}
+	int value = 0;
+	stream >> value;
+	return value;
+}
+
+void checkCryptoActivity()
+{
+	int current = readEntropyAvail();
+	if (current == -1)
+		return;
+	if (previousEntropyPool == -1)
+	{
+		previousEntropyPool = current;
+		return;
+	}
+	int drop = previousEntropyPool - current;
+	if (drop > ENTROPY_DROP_THRESHOLD)
+		writeLog("ALERT: crypto activity detected"
+			+ std::string(" | entropy pool dropped by ") + std::to_string(drop)
+			+ " bits (now " + std::to_string(current) + " bits)");
+	previousEntropyPool = current;
+}
+
+// ── Inotify setup ─────────────────────────────────────────────────────────────
+
+int setupInotify(const std::vector<std::filesystem::path> &paths,
+				 std::map<int, std::filesystem::path> &watchMap)
+{
+	int fd = inotify_init();
 	if (fd < 0)
 	{
 		writeLog("ERROR: inotify_init() failed");
 		exit(EXIT_FAILURE);
 	}
-	i = 0;
+	size_t i = 0;
 	while (i < paths.size())
 	{
-		int wd = inotify_add_watch(fd, paths[i].c_str(), IN_ACCESS | IN_OPEN | IN_MODIFY | IN_CREATE | IN_DELETE);
+		int wd = inotify_add_watch(fd, paths[i].c_str(),
+					IN_ACCESS | IN_OPEN | IN_MODIFY | IN_CREATE | IN_DELETE);
 		if (wd < 0)
 			writeLog("WARNING: cannot watch " + paths[i].string());
-		i = i + 1;
+		else
+			watchMap[wd] = paths[i];
+		i += 1;
 	}
 	return fd;
 }
 
-void monitorLoop(int inotifyFd)
+// ── Main monitoring loop ──────────────────────────────────────────────────────
+
+void monitorLoop(int inotifyFd, const std::map<int, std::filesystem::path> &watchMap)
 {
-    char buffer[4096];
-    int len;
-    
-    // Boucle infinie englober TOUT
-    while (true)
-    {
-        len = read(inotifyFd, buffer, sizeof(buffer));
-        
-        if (len < 0)
-        {
-            writeLog("ERROR: read() failed");
-            continue;
-        }
+	char          buffer[4096];
+	fd_set        fds;
+	struct timeval timeout;
+	int           ret;
+	int           len;
 
-        int i = 0;
-        // Boucle lecture événements DOIT être dedans
-        while (i < len)
-        {
-            struct inotify_event *event = (struct inotify_event *)&buffer[i];
+	while (true)
+	{
+		FD_ZERO(&fds);
+		FD_SET(inotifyFd, &fds);
+		timeout.tv_sec  = CRYPTO_CHECK_INTERVAL;
+		timeout.tv_usec = 0;
 
-            // event->len dire si fichier a un nom. event->name avoir le nom.
-            if (event->len > 0)
-            {
-                std::string filename = event->name;
+		ret = select(inotifyFd + 1, &fds, nullptr, nullptr, &timeout);
 
-                // Utiliser & (ET bit à bit) pour vérifier masque
-                if (event->mask & IN_ACCESS)
-                {
-                    writeLog("ACCESS detected: " + filename);
-                    // Toi faire checkReadAbuse() plus tard
-                }
+		if (ret < 0)
+		{
+			writeLog("ERROR: select() failed");
+			continue;
+		}
 
-                if (event->mask & IN_MODIFY)
-                {
-                    writeLog("MODIFY detected: " + filename);
-                    // Toi faire checkEntropy() plus tard
-                }
-            }
+		if (ret == 0)
+		{
+			checkCryptoActivity();
+			continue;
+		}
 
-            // Avancer au prochain événement
-            i = i + sizeof(struct inotify_event) + event->len;
-        }
-    }
+		len = read(inotifyFd, buffer, sizeof(buffer));
+		if (len < 0)
+		{
+			writeLog("ERROR: read() on inotify failed");
+			continue;
+		}
+
+		int i = 0;
+		while (i < len)
+		{
+			struct inotify_event *event = (struct inotify_event *)&buffer[i];
+			if (event->len > 0)
+			{
+				std::string           filename = event->name;
+				std::filesystem::path fullPath;
+				if (watchMap.count(event->wd))
+					fullPath = watchMap.at(event->wd) / filename;
+				else
+					fullPath = std::filesystem::path(filename);
+				if (event->mask & IN_ACCESS)
+				{
+					writeLog("ACCESS detected: " + fullPath.string());
+					checkReadAbuse(fullPath.string());
+				}
+				if (event->mask & IN_MODIFY)
+				{
+					writeLog("MODIFY detected: " + fullPath.string());
+					checkEntropy(fullPath);
+				}
+			}
+			i = i + (int)sizeof(struct inotify_event) + (int)event->len;
+		}
+	}
 }
+
+// ── Entry point ───────────────────────────────────────────────────────────────
 
 int main(int argc, char **argv)
 {
 	checkForRootPermission();
-	daemonize();
 	setupLog();
-	std::vector<std::filesystem::path> paths = parsePaths(argc, argv);
-    return EXIT_SUCCESS;
+	daemonize();
+	std::vector<std::filesystem::path>    paths = parsePaths(argc, argv);
+	std::map<int, std::filesystem::path>  watchMap;
+	int inotifyFd = setupInotify(paths, watchMap);
+	writeLog("INFO: irondome started, monitoring " + std::to_string(paths.size()) + " path(s)");
+	monitorLoop(inotifyFd, watchMap);
+	return EXIT_SUCCESS;
 }

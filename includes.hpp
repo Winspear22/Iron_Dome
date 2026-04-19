@@ -6,7 +6,7 @@
 /*   By: adnen <adnen@student.42.fr>                +#+  +:+       +#+        */
 /*                                                +#+#+#+#+#+   +#+           */
 /*   Created: 2026/04/19 18:19:11 by adnen             #+#    #+#             */
-/*   Updated: 2026/04/19 20:52:17 by adnen            ###   ########.fr       */
+/*   Updated: 2026/04/19 21:25:42 by adnen            ###   ########.fr       */
 /*                                                                            */
 /* ************************************************************************** */
 
@@ -24,9 +24,13 @@
 #include <chrono>
 #include <ctime>
 #include <sys/inotify.h>
-
-# define EXIT_SUCCESS 0
-# define EXIT_FAILURE 1
+#include <map>
+#include <utility>
+#include <array>
+#include <cmath>
+#include <string>
+#include <sys/select.h>
+#include <sys/time.h>
 
 # define SUCCESS true
 # define FAILURE false
