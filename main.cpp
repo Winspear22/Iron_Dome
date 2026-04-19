@@ -6,7 +6,7 @@
 /*   By: adnen <adnen@student.42.fr>                +#+  +:+       +#+        */
 /*                                                +#+#+#+#+#+   +#+           */
 /*   Created: 2026/04/19 18:18:53 by adnen             #+#    #+#             */
-/*   Updated: 2026/04/19 20:42:08 by adnen            ###   ########.fr       */
+/*   Updated: 2026/04/19 20:50:50 by adnen            ###   ########.fr       */
 /*                                                                            */
 /* ************************************************************************** */
 
@@ -115,6 +115,23 @@ std::vector<std::filesystem::path> parsePaths(int argc, char **argv)
 	}
 	return paths;
 }
+
+void writeLog(const std::string &message)
+{
+	std::string logFile = "/var/log/irondome/irondome.log";
+	std::ofstream stream(logFile, std::ios::app);
+
+	if (stream.is_open() == FAILURE)
+	{
+		std::cerr << RED_BOLD << "Error, open() failure." << RESET_BOLD << std::endl;
+		exit(EXIT_FAILURE);
+	}
+	auto now = std::chrono::system_clock::now();
+	std::time_t time = std::chrono::system_clock::to_time_t(now);
+	stream << std::ctime(&time);   // timestamp
+    stream << " | " << message << "\n";
+	stream.close();
+}                                                                                                                                                                                                       
 
 int main(int argc, char **argv)
 {
